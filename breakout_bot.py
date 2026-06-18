@@ -49,9 +49,11 @@ BREAKOUT_BUFFER_MULTIPLIER = 0.5   # breakout must clear the range by 0.5x ATR
 
 POSITION_SIZE = 0.1
 
-# Placeholders - check gold's recent 15-min ATR before trusting these.
-STOP_LOSS_POINTS = 8.0
-TAKE_PROFIT_POINTS = 16.0
+# Stop loss / take profit sized off the same ATR used for the breakout
+# buffer, so they scale with actual gold volatility rather than being a
+# fixed dollar amount that's too tight on volatile days.
+STOP_LOSS_ATR_MULTIPLIER = 1.0
+TAKE_PROFIT_ATR_MULTIPLIER = 2.0
 
 LOG_FILE = "breakout_trades_log.csv"
 HEARTBEAT_FILE = "breakout_bot_heartbeat.csv"
@@ -153,13 +155,15 @@ def get_open_position():
     return None
 
 
-def open_position(direction, current_price):
+def open_position(direction, current_price, atr):
+    stop_distance = atr * STOP_LOSS_ATR_MULTIPLIER
+    profit_distance = atr * TAKE_PROFIT_ATR_MULTIPLIER
     if direction == "BUY":
-        stop_level = current_price - STOP_LOSS_POINTS
-        profit_level = current_price + TAKE_PROFIT_POINTS
+        stop_level = current_price - stop_distance
+        profit_level = current_price + profit_distance
     else:
-        stop_level = current_price + STOP_LOSS_POINTS
-        profit_level = current_price - TAKE_PROFIT_POINTS
+        stop_level = current_price + stop_distance
+        profit_level = current_price - profit_distance
 
     payload = {
         "epic": GOLD_EPIC,
@@ -171,7 +175,8 @@ def open_position(direction, current_price):
     resp = requests.post(f"{BASE_URL}/positions", headers=session.headers(), json=payload)
     resp.raise_for_status()
     deal_ref = resp.json().get("dealReference")
-    print(f"[{datetime.now()}] Opened {direction} at ~{current_price:.2f} (ref {deal_ref})")
+    print(f"[{datetime.now()}] Opened {direction} at ~{current_price:.2f} "
+          f"(stop={round(stop_level,2)}, profit={round(profit_level,2)}, ATR={round(atr,2)}) (ref {deal_ref})")
     log_trade(direction, current_price, "OPEN")
     return deal_ref
 
@@ -239,10 +244,12 @@ def run_once():
         breakout_down = current_price < recent_low - buffer
 
         if position is None:
-            if breakout_up:
-                open_position("BUY", current_price)
+            if atr is None:
+                print(f"[{datetime.now()}] ATR not available yet, skipping any new entries this run.")
+            elif breakout_up:
+                open_position("BUY", current_price, atr)
             elif breakout_down:
-                open_position("SELL", current_price)
+                open_position("SELL", current_price, atr)
         else:
             direction = position["position"]["direction"]
             # Failed breakout: price fell back inside the prior range - exit early
